@@ -10,14 +10,11 @@ class AudioSyncManager(private val context: Context) {
     private val connectionsClient = Nearby.getConnectionsClient(context)
     private val serviceId = "com.syncbeat.offline.P2P_AUDIO"
     
-    // Keeps track of all connected friends
     private val connectedEndpoints = mutableListOf<String>()
-    
-    // Temporarily holds incoming files while they download
     private val incomingFilePayloads = mutableMapOf<Long, Payload>()
     
-    // A trigger to tell the main screen when a song is ready to play
     var onAudioReceived: ((Uri) -> Unit)? = null
+    var onSyncTickReceived: ((Long) -> Unit)? = null // Triggers when a sync timestamp arrives
 
     private val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
@@ -27,7 +24,6 @@ class AudioSyncManager(private val context: Context) {
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
             if (result.status.isSuccess) {
                 connectedEndpoints.add(endpointId)
-                Log.d("AudioSync", "Connected to $endpointId")
             }
         }
 
@@ -46,8 +42,15 @@ class AudioSyncManager(private val context: Context) {
     private val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
             if (payload.type == Payload.Type.FILE) {
-                // Save the file ID while it downloads in the background
                 incomingFilePayloads[payload.id] = payload
+            } else if (payload.type == Payload.Type.BYTES) {
+                // Parse the sync tick timestamp sent by the host
+                payload.asBytes()?.let { bytes ->
+                    val timestamp = String(bytes).toLongOrNull()
+                    if (timestamp != null) {
+                        onSyncTickReceived?.invoke(timestamp)
+                    }
+                }
             }
         }
 
@@ -55,16 +58,8 @@ class AudioSyncManager(private val context: Context) {
             if (update.status == PayloadTransferUpdate.Status.SUCCESS) {
                 val payload = incomingFilePayloads.remove(update.payloadId)
                 if (payload != null && payload.type == Payload.Type.FILE) {
-                    // Download complete! Get the file URI and trigger the music player
-                    val uri = payload.asFile()?.asUri()
-                    if (uri != null) {
-                        onAudioReceived?.invoke(uri)
-                    } else {
-                        // Fallback for older Android versions
-                        payload.asFile()?.asJavaFile()?.let { file ->
-                            onAudioReceived?.invoke(Uri.fromFile(file))
-                        }
-                    }
+                    val uri = payload.asFile()?.asUri() ?: payload.asFile()?.asJavaFile()?.let { Uri.fromFile(it) }
+                    uri?.let { onAudioReceived?.invoke(it) }
                 }
             }
         }
@@ -84,7 +79,6 @@ class AudioSyncManager(private val context: Context) {
             .addOnFailureListener { onFailure(it) }
     }
 
-    // Beams the audio file to EVERYONE in the room
     fun broadcastAudioFile(fileUri: Uri) {
         val pfd = context.contentResolver.openFileDescriptor(fileUri, "r")
         pfd?.let {
@@ -92,6 +86,14 @@ class AudioSyncManager(private val context: Context) {
             for (endpointId in connectedEndpoints) {
                 connectionsClient.sendPayload(endpointId, filePayload)
             }
+        }
+    }
+
+    // Broadcasts the Host's exact millisecond timeline to all listeners
+    fun sendSyncTick(positionMs: Long) {
+        val payload = Payload.fromBytes(positionMs.toString().toByteArray())
+        for (endpointId in connectedEndpoints) {
+            connectionsClient.sendPayload(endpointId, payload)
         }
     }
 }
