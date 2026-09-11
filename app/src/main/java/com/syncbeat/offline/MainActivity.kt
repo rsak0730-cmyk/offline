@@ -34,32 +34,35 @@ class MainActivity : Activity() {
 
         btnHost.setOnClickListener {
             if (checkPermissions()) {
-                syncManager.startHosting("HostDevice")
-                Toast.makeText(this, "Hosting started...", Toast.LENGTH_SHORT).show()
+                syncManager.startHosting("HostDevice", 
+                    onSuccess = { Toast.makeText(this, "✅ Hosting started perfectly!", Toast.LENGTH_SHORT).show() },
+                    onFailure = { e -> Toast.makeText(this, "❌ Error: ${e.message}", Toast.LENGTH_LONG).show() }
+                )
             }
         }
 
         btnJoin.setOnClickListener {
             if (checkPermissions()) {
-                syncManager.startDiscovering()
-                Toast.makeText(this, "Searching for host...", Toast.LENGTH_SHORT).show()
+                syncManager.startDiscovering(
+                    onSuccess = { Toast.makeText(this, "✅ Searching for host...", Toast.LENGTH_SHORT).show() },
+                    onFailure = { e -> Toast.makeText(this, "❌ Error: ${e.message}", Toast.LENGTH_LONG).show() }
+                )
             }
         }
     }
 
     private fun checkPermissions(): Boolean {
         val requiredPermissions = mutableListOf(
-            Manifest.permission.ACCESS_FINE_LOCATION
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION
         )
         
-        // Modern storage permission for Android 13+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             requiredPermissions.add(Manifest.permission.READ_MEDIA_AUDIO)
         } else {
             requiredPermissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
         
-        // Modern Bluetooth permissions for Android 12+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             requiredPermissions.add(Manifest.permission.BLUETOOTH_ADVERTISE)
             requiredPermissions.add(Manifest.permission.BLUETOOTH_CONNECT)
