@@ -25,19 +25,18 @@ class MainActivity : ComponentActivity() {
     private lateinit var syncManager: AudioSyncManager
     private var player: ExoPlayer? = null
 
-    // This is the File Picker that opens your phone's storage
+    // Opens the File Picker and beams the selected song to friends
     private val selectAudioLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let {
             playLocalAudio(it)
-            // Here we would also tell syncManager to send the file to connected devices!
-            Toast.makeText(this, "Playing song...", Toast.LENGTH_SHORT).show()
+            syncManager.broadcastAudioFile(it) 
+            Toast.makeText(this, "Playing and sending song...", Toast.LENGTH_SHORT).show()
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // Initialize the Audio Player
         player = ExoPlayer.Builder(this).build()
 
         // 1. Golden Neon Sparkle Background
@@ -96,7 +95,7 @@ class MainActivity : ComponentActivity() {
         val btnHost = createGlassButton("✨ Host Golden Room")
         val btnJoin = createGlassButton("🔮 Join Room")
         val btnPlaySong = createGlassButton("🎵 Select & Play Song").apply {
-            visibility = View.GONE // Hidden until you host a room!
+            visibility = View.GONE // Hidden until room is hosted
         }
 
         mainLayout.addView(titleText)
@@ -107,11 +106,82 @@ class MainActivity : ComponentActivity() {
 
         syncManager = AudioSyncManager(this)
 
+        // WHEN A FRIEND SENDS A SONG, PLAY IT AUTOMATICALLY!
+        syncManager.onAudioReceived = { receivedUri ->
+            runOnUiThread {
+                Toast.makeText(this, "Song received! Playing now...", Toast.LENGTH_SHORT).show()
+                playLocalAudio(receivedUri)
+            }
+        }
+
         btnHost.setOnClickListener {
             if (checkPermissions()) {
                 syncManager.startHosting("HostDevice", 
                     onSuccess = { 
                         Toast.makeText(this, "✅ Golden Room Hosted!", Toast.LENGTH_SHORT).show()
+                        btnPlaySong.visibility = View.VISIBLE
+                    },
+                    onFailure = { e -> Toast.makeText(this, "❌ Error: ${e.message}", Toast.LENGTH_LONG).show() }
+                )
+            }
+        }
+
+        btnJoin.setOnClickListener {
+            if (checkPermissions()) {
+                syncManager.startDiscovering(
+                    onSuccess = { Toast.makeText(this, "🔍 Searching for host...", Toast.LENGTH_SHORT).show() },
+                    onFailure = { e -> Toast.makeText(this, "❌ Error: ${e.message}", Toast.LENGTH_LONG).show() }
+                )
+            }
+        }
+
+        btnPlaySong.setOnClickListener {
+            selectAudioLauncher.launch("audio/*")
+        }
+    }
+
+    private fun playLocalAudio(uri: Uri) {
+        player?.stop()
+        val mediaItem = MediaItem.fromUri(uri)
+        player?.setMediaItem(mediaItem)
+        player?.prepare()
+        player?.play()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        player?.release()
+    }
+
+    private fun checkPermissions(): Boolean {
+        val requiredPermissions = mutableListOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        )
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            requiredPermissions.add(Manifest.permission.READ_MEDIA_AUDIO)
+        } else {
+            requiredPermissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            requiredPermissions.add(Manifest.permission.BLUETOOTH_ADVERTISE)
+            requiredPermissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+            requiredPermissions.add(Manifest.permission.BLUETOOTH_SCAN)
+        }
+
+        val missingPermissions = requiredPermissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (missingPermissions.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, missingPermissions.toTypedArray(), 1)
+            return false
+        }
+        return true
+    }
+}
                         btnPlaySong.visibility = View.VISIBLE // Show the play button!
                     },
                     onFailure = { e -> Toast.makeText(this, "❌ Error: ${e.message}", Toast.LENGTH_LONG).show() }
