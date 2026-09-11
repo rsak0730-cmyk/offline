@@ -14,7 +14,7 @@ class AudioSyncManager(private val context: Context) {
     private val incomingFilePayloads = mutableMapOf<Long, Payload>()
     
     var onAudioReceived: ((Uri) -> Unit)? = null
-    var onSyncTickReceived: ((Long) -> Unit)? = null // Triggers when a sync timestamp arrives
+    var onSyncTickReceived: ((Long) -> Unit)? = null
 
     private val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
@@ -44,7 +44,6 @@ class AudioSyncManager(private val context: Context) {
             if (payload.type == Payload.Type.FILE) {
                 incomingFilePayloads[payload.id] = payload
             } else if (payload.type == Payload.Type.BYTES) {
-                // Parse the sync tick timestamp sent by the host
                 payload.asBytes()?.let { bytes ->
                     val timestamp = String(bytes).toLongOrNull()
                     if (timestamp != null) {
@@ -79,6 +78,14 @@ class AudioSyncManager(private val context: Context) {
             .addOnFailureListener { onFailure(it) }
     }
 
+    // THIS IS THE FUNCTION THAT WAS MISSING
+    fun stopAllConnections() {
+        connectionsClient.stopAdvertising()
+        connectionsClient.stopDiscovery()
+        connectionsClient.stopAllEndpoints()
+        connectedEndpoints.clear()
+    }
+
     fun broadcastAudioFile(fileUri: Uri) {
         val pfd = context.contentResolver.openFileDescriptor(fileUri, "r")
         pfd?.let {
@@ -89,7 +96,6 @@ class AudioSyncManager(private val context: Context) {
         }
     }
 
-    // Broadcasts the Host's exact millisecond timeline to all listeners
     fun sendSyncTick(positionMs: Long) {
         val payload = Payload.fromBytes(positionMs.toString().toByteArray())
         for (endpointId in connectedEndpoints) {
