@@ -7,13 +7,12 @@ import kotlin.math.max
 class AudioSyncManager(
     private val isHost: Boolean,
     private val mediaPlayer: MediaPlayer,
-    private val onTrackChangeRequested: ((String) -> Unit)? = null // Callback to tell UI to load new track
+    private val onTrackChangeRequested: ((String) -> Unit)? = null 
 ) {
     private val timeSynchronizer = TimeSynchronizer(isHost)
     private lateinit var networkManager: NetworkCommandManager
     private val scope = CoroutineScope(Dispatchers.Main + Job())
 
-    // 150ms buffer gives the network time to deliver the UDP packet before execution
     private val NETWORK_BUFFER_MS = 150L 
     private var currentBroadcastIp: String = "255.255.255.255"
 
@@ -30,8 +29,6 @@ class AudioSyncManager(
         }
         networkManager.start()
     }
-
-    // --- HOST CONTROLS ---
 
     fun hostPlay() {
         triggerAction("PLAY", currentPosition())
@@ -53,8 +50,6 @@ class AudioSyncManager(
         triggerAction("CHANGE_TRACK", 0L, nextTrackId)
     }
 
-    // --- INTERNAL SCHEDULING LOGIC ---
-
     private fun currentPosition(): Long {
         return try { mediaPlayer.currentPosition.toLong() } catch (e: Exception) { 0L }
     }
@@ -72,7 +67,6 @@ class AudioSyncManager(
             val currentTime = timeSynchronizer.getSyncedTime()
             val delayMs = max(0L, executeAt - currentTime)
             
-            // If changing track, load it BEFORE the delay so it's ready to play
             if (action == "CHANGE_TRACK" && trackId != null) {
                 onTrackChangeRequested?.invoke(trackId)
             }
@@ -87,13 +81,13 @@ class AudioSyncManager(
                     }
                     "PAUSE" -> {
                         mediaPlayer.pause()
-                        mediaPlayer.seekTo(positionMs.toInt()) // Keep everyone at the exact paused frame
+                        mediaPlayer.seekTo(positionMs.toInt())
                     }
                     "SEEK" -> {
                         mediaPlayer.seekTo(positionMs.toInt())
                     }
                     "CHANGE_TRACK" -> {
-                        mediaPlayer.start() // Track was already loaded, just hit play
+                        mediaPlayer.start() 
                     }
                 }
             } catch (e: Exception) { e.printStackTrace() }
