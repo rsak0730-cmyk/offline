@@ -136,7 +136,6 @@ class MainActivity : ComponentActivity() {
     private var isHostDevice = false
     private var isClientDevice = false
     
-    // Explicit OFF state by default
     private var spatialPosition = "OFF"
 
     private val librarySongs = mutableListOf<Song>()
@@ -152,7 +151,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val audioAttributes = AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build()
         player = ExoPlayer.Builder(this).setAudioAttributes(audioAttributes, true).build()
-        syncManager = AudioSyncManager(this)
+        
+        // Initialize the new UDP AudioSyncManager for ExoPlayer
+        syncManager = AudioSyncManager(player!!) { trackUriString ->
+            runOnUiThread {
+                player?.setMediaItem(MediaItem.fromUri(Uri.parse(trackUriString)))
+                player?.prepare()
+            }
+        }
 
         player?.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -166,10 +172,14 @@ class MainActivity : ComponentActivity() {
                                 queueAdapter.notifyItemRangeRemoved(0, playingIndex)
                                 queueAdapter.notifyItemRangeChanged(0, queueSongs.size)
                             }
+                            
+                            // If auto-transitioning, host tells clients to change track too
+                            if (isHostDevice && reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
+                                syncManager.hostNextTrack(playingUri.toString())
+                            }
                         }
                     }
                 }
-                mediaItem?.localConfiguration?.uri?.let { uri -> if (isHostDevice) syncManager.broadcastAudioFile(uri) }
             }
             
             override fun onMediaMetadataChanged(mediaMetadata: androidx.media3.common.MediaMetadata) {
@@ -228,8 +238,11 @@ class MainActivity : ComponentActivity() {
                 override fun onStopTrackingTouch(bar: SeekBar?) {
                     isDraggingTimeline = false
                     bar?.let {
-                        player?.seekTo(it.progress.toLong())
-                        if (isHostDevice) syncManager.sendSyncTick(it.progress.toLong())
+                        if (isHostDevice) {
+                            syncManager.hostSeekTo(it.progress.toLong())
+                        } else if (!isClientDevice) {
+                            player?.seekTo(it.progress.toLong())
+                        }
                     }
                 }
             })
@@ -259,11 +272,7 @@ class MainActivity : ComponentActivity() {
             }
             btn3D.text = if (spatialPosition == "OFF") "◧ 8D OFF" else "◧ $spatialPosition"
             Toast.makeText(this, if (spatialPosition == "OFF") "8D Effect Disabled" else "8D Position: $spatialPosition", Toast.LENGTH_SHORT).show()
-            
-            // Instantly restore normal volume if turned off
-            if (spatialPosition == "OFF") {
-                player?.volume = 1.0f
-            }
+            if (spatialPosition == "OFF") player?.volume = 1.0f
         }
 
         btnEQ.setAnimatedClick { showEqDialog() }
@@ -282,10 +291,18 @@ class MainActivity : ComponentActivity() {
         queueRecyclerView.adapter = queueAdapter
 
         libraryAdapter = SongAdapter(librarySongs, false) { song ->
+            if (isClientDevice) return@SongAdapter // Clients shouldn't trigger track loads manually
+            
             player?.addMediaItem(MediaItem.fromUri(song.uri))
             queueSongs.add(song); queueAdapter.notifyItemInserted(queueSongs.size - 1)
             if (player?.playbackState == Player.STATE_IDLE) player?.prepare()
-            player?.play(); btnPlayPause.text = "❚❚ PAUSE"
+            
+            if (isHostDevice) {
+                syncManager.hostNextTrack(song.uri.toString())
+            } else {
+                player?.play() 
+            }
+            btnPlayPause.text = "❚❚ PAUSE"
         }
         libraryRecyclerView.adapter = libraryAdapter
 
@@ -304,48 +321,56 @@ class MainActivity : ComponentActivity() {
 
         btnPlayPause.setAnimatedClick { 
             player?.let { 
-                if (it.isPlaying) { it.pause(); btnPlayPause.text = "► PLAY" } 
-                else { it.play(); btnPlayPause.text = "❚❚ PAUSE" } 
+                if (isHostDevice) {
+                    if (it.isPlaying) {
+                        syncManager.hostPause()
+                        btnPlayPause.text = "► PLAY"
+                    } else {
+                        syncManager.hostPlay()
+                        btnPlayPause.text = "❚❚ PAUSE"
+                    }
+                } else if (!isClientDevice) {
+                    if (it.isPlaying) { it.pause(); btnPlayPause.text = "► PLAY" } 
+                    else { it.play(); btnPlayPause.text = "❚❚ PAUSE" }
+                }
             } 
         }
-        btnNext.setAnimatedClick { player?.seekToNextMediaItem() }
-
-        syncManager.onAudioReceived = { receivedUri -> runOnUiThread { 
-            player?.stop(); player?.setMediaItem(MediaItem.fromUri(receivedUri)); player?.prepare(); player?.play() 
-        } }
         
-        syncManager.onSyncTickReceived = { hostPositionMs ->
-            if (isClientDevice) {
-                player?.let { localPlayer ->
-                    val drift = kotlin.math.abs(localPlayer.currentPosition - hostPositionMs)
-                    if (drift > 150) localPlayer.seekTo(hostPositionMs) 
-                }
+        btnNext.setAnimatedClick { 
+            if (isHostDevice) {
+                player?.seekToNextMediaItem()
+                // Wait for the transition listener to handle the UDP network broadcast
+            } else if (!isClientDevice) {
+                player?.seekToNextMediaItem()
             }
         }
 
         btnHost.setAnimatedClick {
             if (checkPermissions()) {
                 isHostDevice = true; isClientDevice = false; seekBar.isEnabled = true
-                syncManager.startHosting("HostDevice",
-                    onSuccess = { btnHost.visibility = View.GONE; btnJoin.visibility = View.GONE; btnLeave.visibility = View.VISIBLE; startHostSyncLoop() },
-                    onFailure = { Toast.makeText(this, "Error", Toast.LENGTH_SHORT).show() }
-                )
+                
+                // Initialize as Host
+                syncManager.initialize(isHost = true)
+                
+                btnHost.visibility = View.GONE; btnJoin.visibility = View.GONE; btnLeave.visibility = View.VISIBLE
             }
         }
 
         btnJoin.setAnimatedClick {
             if (checkPermissions()) {
                 isHostDevice = false; isClientDevice = true; seekBar.isEnabled = false
-                syncManager.startDiscovering(
-                    onSuccess = { btnHost.visibility = View.GONE; btnJoin.visibility = View.GONE; btnLeave.visibility = View.VISIBLE; btnPlayPause.visibility = View.GONE; btnNext.visibility = View.GONE },
-                    onFailure = { Toast.makeText(this, "Error", Toast.LENGTH_SHORT).show() }
-                )
+                
+                // Note: Connect the host and client to the same Mobile Wi-Fi Hotspot. 
+                // 192.168.43.1 is the standard Gateway IP for an Android Hotspot host.
+                syncManager.initialize(isHost = false, hostIp = "192.168.43.1")
+                
+                btnHost.visibility = View.GONE; btnJoin.visibility = View.GONE; btnLeave.visibility = View.VISIBLE 
+                btnPlayPause.visibility = View.GONE; btnNext.visibility = View.GONE
             }
         }
 
         btnLeave.setAnimatedClick {
-            syncManager.stopAllConnections(); player?.stop(); isHostDevice = false; isClientDevice = false; seekBar.isEnabled = true
-            syncHandler.removeCallbacks(hostSyncRunnable); syncHandler.removeCallbacks(progressUpdateRunnable)
+            syncManager.release(); player?.stop(); isHostDevice = false; isClientDevice = false; seekBar.isEnabled = true
             btnHost.visibility = View.VISIBLE; btnJoin.visibility = View.VISIBLE; btnLeave.visibility = View.GONE
             btnPlayPause.visibility = View.VISIBLE; btnNext.visibility = View.VISIBLE
         }
@@ -480,16 +505,7 @@ class MainActivity : ComponentActivity() {
         libraryAdapter.notifyDataSetChanged()
     }
 
-    private val hostSyncRunnable = object : Runnable {
-        override fun run() {
-            if (isHostDevice && player?.isPlaying == true) player?.currentPosition?.let { syncManager.sendSyncTick(it) }
-            syncHandler.postDelayed(this, 1000)
-        }
-    }
-
-    private fun startHostSyncLoop() { syncHandler.removeCallbacks(hostSyncRunnable); syncHandler.post(hostSyncRunnable) }
-
-    override fun onDestroy() { super.onDestroy(); syncHandler.removeCallbacks(hostSyncRunnable); syncHandler.removeCallbacks(progressUpdateRunnable); syncHandler.removeCallbacks(spatialPanRunnable); equalizer?.release(); player?.release() }
+    override fun onDestroy() { super.onDestroy(); syncManager.release(); syncHandler.removeCallbacks(progressUpdateRunnable); syncHandler.removeCallbacks(spatialPanRunnable); equalizer?.release(); player?.release() }
 
     private fun checkPermissions(): Boolean {
         val req = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.RECORD_AUDIO)
@@ -500,4 +516,3 @@ class MainActivity : ComponentActivity() {
         return true
     }
 }
-
